@@ -1,0 +1,26 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+myvenv/
+venv/
+.venv/
+
+# SQLite database
+*.db
+
+# Uploads / runtime generated files
+backend/uploads/
+
+# ML models (recommended to download separately)
+*.pt
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+
