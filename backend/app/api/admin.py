@@ -8,7 +8,6 @@ from sqlmodel import Session, select
 from app.db.models import User, Class, AuditLog
 from app.core.dependencies import get_current_admin_user
 from app.api.websocket import notifier 
-# 🚨 REMOVED the broken import of get_password_hash
 from database import get_session 
 from pydantic import BaseModel
 
@@ -24,7 +23,7 @@ class ViolationReport(BaseModel):
     evidence: str 
 
 # ----------------------------------------------------------------------
-# 1. 🚨 Violation Reporting
+# 1. 🚨 Violation Reporting (Fixed for Mirroring & Pathing)
 # ----------------------------------------------------------------------
 @router.post("/report-violation")
 async def report_violation(report: ViolationReport, session: Annotated[Session, Depends(get_session)]):
@@ -45,17 +44,23 @@ async def report_violation(report: ViolationReport, session: Annotated[Session, 
         session.commit()
         session.refresh(new_log)
         
+        # 🚨 FIX: Standardized payload for both Teacher and Admin Mirror
         await notifier.send_alert(report.teacher_id, {
             "message": f"🚨 {report.detail}", 
-            "image_url": f"http://localhost:8000/{db_path}"
+            "detail": report.detail,
+            "image_url": f"http://localhost:8000/{db_path}",
+            "image_path": f"http://localhost:8000/{db_path}",
+            "timestamp": datetime.now().isoformat(),
+            "class_id": report.class_id
         })
         return {"status": "success", "image_url": db_path}
-    except Exception:
+    except Exception as e:
         session.rollback()
+        print(f"Violation Log Error: {e}")
         raise HTTPException(status_code=500, detail="DB Log failed")
 
 # ----------------------------------------------------------------------
-# 2. 📋 Admin Management Endpoints (Fixed to match your Security.py)
+# 2. 📋 Admin Management Endpoints
 # ----------------------------------------------------------------------
 
 @router.post("/create_teacher")
@@ -64,19 +69,16 @@ async def create_teacher(
     session: Annotated[Session, Depends(get_session)],
     admin_user: Annotated[User, Depends(get_current_admin_user)]
 ):
-    # Check if username exists
     existing = session.exec(select(User).where(User.username == teacher_data["username"])).first()
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
 
-    # 🚨 TEMPORARY: Since get_password_hash is missing, we use raw password
-    # Note: You should eventually add hashing to security.py for safety!
     new_teacher = User(
         username=teacher_data["username"],
         role="Teacher",
         teacher_identifier=teacher_data.get("teacher_identifier"),
         department=teacher_data.get("department"),
-        hashed_password=teacher_data.get("password", "temp123") # Plain text for now
+        hashed_password=teacher_data.get("password", "temp123") 
     )
     session.add(new_teacher)
     session.commit()
@@ -123,3 +125,33 @@ async def get_audit_logs(session: Annotated[Session, Depends(get_session)], admi
             "class_name": cls.name if cls else "Unknown Room"
         })
     return formatted
+
+# ----------------------------------------------------------------------
+# 4. 🗑️ Deletion with Cleanup
+# ----------------------------------------------------------------------
+
+@router.delete("/classes/{class_id}")
+async def delete_class(
+    class_id: int,
+    session: Annotated[Session, Depends(get_session)],
+    admin_user: Annotated[User, Depends(get_current_admin_user)]
+):
+    """🚨 CRITICAL FIX: Clean up AuditLogs first to satisfy Foreign Key constraints"""
+    db_class = session.get(Class, class_id)
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    try:
+        # 1. Fetch and delete all logs linked to this class ID
+        logs_to_clear = session.exec(select(AuditLog).where(AuditLog.class_id == class_id)).all()
+        for log in logs_to_clear:
+            session.delete(log)
+        
+        # 2. Now delete the classroom itself
+        session.delete(db_class)
+        session.commit()
+        return {"status": "success", "message": f"Classroom {class_id} and related logs removed."}
+    except Exception as e:
+        session.rollback()
+        print(f"Delete Error: {e}")
+        raise HTTPException(status_code=500, detail="Delete failed due to existing data relationships.")

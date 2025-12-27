@@ -7,19 +7,22 @@ import cv2
 import numpy as np
 import base64
 
+# Import your route modules
 from app.api import auth, admin, teacher, websocket
 
 app = FastAPI(title="Discipline Monitor API")
 
 # --- 🚀 YOLOv8 Initialization (Mac M2 Optimized) ---
-# Load YOLOv8 Nano (n) - the fastest version for real-time use
+# Using the Nano model for maximum FPS on Apple Silicon
 model = YOLO('yolov8n.pt') 
 
-# --- Static Files (Evidence Storage) ---
+# --- 📁 Static Files (Evidence Storage) ---
+# Ensure the folder exists and is mounted so Flutter can load images
 os.makedirs("uploads/evidence", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# --- CORS Middleware ---
+# --- 🌐 CORS Middleware ---
+# Allows your React Admin panel to communicate with the FastAPI server
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -36,7 +39,6 @@ app.add_middleware(
 )
 
 # --- 🧠 AI Detection Endpoint ---
-# We put this here or in admin.py. This receives the base64 frame from React.
 @app.post("/api/admin/detect")
 async def detect_objects(data: dict):
     try:
@@ -44,28 +46,24 @@ async def detect_objects(data: dict):
         nparr = np.frombuffer(base64.b64decode(encoded), np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-        # 🚀 IMPROVEMENT 1: Increase imgsz to 640. 
-        # This makes the AI "squint" harder to see smaller objects.
-        # device='mps' ensures your M2 GPU still runs this at 30+ FPS.
+        # Performance: conf=0.20 and imgsz=640 for better accuracy on small phones
+        # device='mps' uses the Mac M2 GPU for hardware acceleration
         results = model.predict(frame, conf=0.20, imgsz=640, device='mps', verbose=False)
 
         predictions = []
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                cls_id = int(box.cls[0])
+                label = model.names[int(box.cls[0])]
                 conf = float(box.conf[0])
-                label = model.names[cls_id]
 
-                # 🚀 IMPROVEMENT 2: Priority filtering.
-                # Only include phones, or common misclassifications like 'remote'.
-                # A phone is class 67 in standard COCO dataset.
+                # Filtering for cell phones and similar objects
                 target_classes = ['cell phone', 'remote', 'book'] 
                 
                 if label in target_classes:
                     predictions.append({
                         "x": x1, "y": y1, "w": x2-x1, "h": y2-y1,
-                        "class": "cell phone" if label == 'remote' else label, # Fix misclassification
+                        "class": "cell phone" if label == 'remote' else label,
                         "conf": conf
                     })
 
@@ -73,11 +71,15 @@ async def detect_objects(data: dict):
     except Exception as e:
         return {"error": str(e), "predictions": []}
 
-# --- Include Routers ---
+# --- 🔌 Include Routers ---
+# Standard API routes
 app.include_router(auth.router, prefix="/api/auth")
 app.include_router(admin.router, prefix="/api/admin") 
 app.include_router(teacher.router, prefix="/api/teacher") 
-app.include_router(websocket.router)
+
+# 🚨 THE FIX: Mounting the WebSocket router with the prefix matched in Flutter
+# This resolves the "Not Upgraded to WebSocket" error.
+app.include_router(websocket.router, prefix="/api/websocket")
 
 @app.get("/")
 def read_root():
