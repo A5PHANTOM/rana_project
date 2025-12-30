@@ -78,7 +78,8 @@ async def create_teacher(
         role="Teacher",
         teacher_identifier=teacher_data.get("teacher_identifier"),
         department=teacher_data.get("department"),
-        hashed_password=teacher_data.get("password", "temp123") 
+        # Store a proper hash rather than plaintext
+        hashed_password=User.get_password_hash(teacher_data.get("password", "temp123")) 
     )
     session.add(new_teacher)
     session.commit()

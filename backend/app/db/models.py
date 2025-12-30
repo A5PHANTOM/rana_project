@@ -34,7 +34,11 @@ class User(SQLModel, table=True):
     links: List["UserClassLink"] = Relationship(back_populates="user_obj")
     
     def verify_password(self, password: str) -> bool:
-        return pwd_context.verify(password, self.hashed_password)
+        # Handle cases where legacy records stored plaintext instead of a hash
+        try:
+            return pwd_context.verify(password, self.hashed_password)
+        except Exception:
+            return password == self.hashed_password
 
     @staticmethod
     def get_password_hash(password: str) -> str:

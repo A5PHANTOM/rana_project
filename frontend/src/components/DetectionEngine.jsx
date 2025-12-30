@@ -3,57 +3,124 @@ import React, { useEffect, useRef } from 'react';
 const DetectionEngine = ({ imageRef, classId, teacherId }) => {
     const canvasRef = useRef(null); 
     const lastReportTime = useRef(0);
+    const streamWsRef = useRef(null);
     const isProcessing = useRef(false);
 
+    // 🚀 NEW: Connect to stream relay for parallel access
     useEffect(() => {
-        const detectFrame = async () => {
-            if (isProcessing.current || !imageRef.current || imageRef.current.naturalWidth === 0) return;
+        if (!classId) return;
+        
+        const token = localStorage.getItem('token') || localStorage.getItem('access_token');
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const streamUrl = `${protocol}//localhost:8000/api/websocket/ws/stream/${classId}?token=${token}`;
+        
+        console.log(`📺 Connecting to stream: ${streamUrl}`);
+        streamWsRef.current = new WebSocket(streamUrl);
+        
+        streamWsRef.current.onopen = () => {
+            console.log(`✅ Connected to class ${classId} stream`);
+        };
+        
+        streamWsRef.current.onmessage = async (event) => {
+            try {
+                const frameData = JSON.parse(event.data);
+                
+                if (frameData.type === 'frame') {
+                    // Only swap to base64 frame if no HTTP stream is present
+                    if (imageRef.current) {
+                        const curSrc = imageRef.current.src || '';
+                        const isHttpStream = /^https?:\/\//i.test(curSrc);
+                        if (!isHttpStream) {
+                            imageRef.current.src = frameData.image;
+                        }
+                    }
 
-            // 🛑 SAFETY CHECK: Don't even try to detect if we don't know who/where this is
-            if (!classId || !teacherId) {
-                console.warn("⏳ AI waiting for Class/Teacher ID context...");
-                return;
+                    // Draw predictions on canvas
+                    try {
+                        console.log('Stream frame predictions:', (frameData.predictions || []).length);
+                    } catch (e) {}
+                    drawOverlay(frameData.predictions || []);
+                }
+            } catch (err) {
+                console.error("Stream processing error:", err);
             }
+        };
+        
+        streamWsRef.current.onerror = (error) => {
+            console.error(`❌ Stream error for class ${classId}:`, error);
+        };
+        
+        streamWsRef.current.onclose = () => {
+            console.log(`📴 Disconnected from class ${classId} stream`);
+        };
+        
+        return () => {
+            if (streamWsRef.current) {
+                streamWsRef.current.close();
+            }
+        };
+    }, [classId, imageRef]);
+
+    // 🔁 Send frames to the backend for YOLO detection (drives alerts/evidence)
+    useEffect(() => {
+        if (!classId || !teacherId) return;
+
+        const detectFrame = async () => {
+            if (isProcessing.current) return;
+            if (!imageRef.current) return;
+
+            const baseEl = imageRef.current;
+            const srcW = baseEl.videoWidth || baseEl.naturalWidth || baseEl.clientWidth;
+            const srcH = baseEl.videoHeight || baseEl.naturalHeight || baseEl.clientHeight;
+            if (!srcW || !srcH) return;
 
             isProcessing.current = true;
             try {
-                // 1. Capture current frame
+                // Capture current frame to base64
                 const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = imageRef.current.naturalWidth;
-                tempCanvas.height = imageRef.current.naturalHeight;
-                tempCanvas.getContext('2d').drawImage(imageRef.current, 0, 0);
+                tempCanvas.width = srcW;
+                tempCanvas.height = srcH;
+                tempCanvas.getContext('2d').drawImage(baseEl, 0, 0, srcW, srcH);
                 const base64Image = tempCanvas.toDataURL('image/jpeg', 0.9);
 
-                // 2. Send to FastAPI YOLO Engine
                 const response = await fetch('http://localhost:8000/api/admin/detect', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: base64Image })
+                    body: JSON.stringify({ image: base64Image, class_id: classId, teacher_id: teacherId })
                 });
 
-                const data = await response.json();
-                drawOverlay(data.predictions);
+                if (!response.ok) {
+                    console.error('Detect API error', response.status);
+                    const txt = await response.text();
+                    console.error('Detect body:', txt);
+                }
 
-                // 3. Violation Check
-                const phone = data.predictions.find(p => p.class === 'cell phone' && p.conf > 0.35);
-                
-                if (phone) {
-                    const now = Date.now();
-                    // 12-second cooldown to avoid spamming the database
-                    if (now - lastReportTime.current > 12000) {
-                        lastReportTime.current = now;
-                        console.log("🚩 PHONE DETECTED - ATTEMPTING TO LOG...");
-                        await reportViolation(phone, base64Image);
-                    }
+                const data = await response.json();
+                console.log('Detect response predictions:', (data.predictions || []).length, data);
+                drawOverlay(data.predictions || [], { srcW, srcH });
+
+                // Violation detection and logging (align threshold with backend)
+                const phone = (data.predictions || []).find(p => p.class === 'cell phone' && p.conf > 0.18);
+                const now = Date.now();
+                const shouldThrottle = (now - lastReportTime.current) > 12000;
+
+                // If backend already saved evidence (evidence_url present), still give UI feedback
+                if (data.evidence_url && shouldThrottle) {
+                    lastReportTime.current = now;
+                    try { alert("🚨 Phone Violation Recorded!"); } catch (e) {}
+                } else if (phone && shouldThrottle) {
+                    lastReportTime.current = now;
+                    console.log("🚩 PHONE DETECTED - ATTEMPTING TO LOG...");
+                    await reportViolation(phone, base64Image);
                 }
             } catch (err) {
-                console.error("AI Cycle Error:", err);
+                console.error("AI detect loop error:", err);
             } finally {
                 isProcessing.current = false;
             }
         };
 
-        const interval = setInterval(detectFrame, 700); 
+        const interval = setInterval(detectFrame, 1000);
         return () => clearInterval(interval);
     }, [classId, teacherId, imageRef]);
 
@@ -91,18 +158,24 @@ const DetectionEngine = ({ imageRef, classId, teacherId }) => {
         }
     };
 
-    const drawOverlay = (predictions) => {
+    const drawOverlay = (predictions, dims) => {
         const canvas = canvasRef.current;
         if (!canvas || !imageRef.current) return;
         const ctx = canvas.getContext('2d');
-        
-        canvas.width = imageRef.current.clientWidth;
-        canvas.height = imageRef.current.clientHeight;
+        const baseEl = imageRef.current;
+        const srcW = (dims && dims.srcW) || baseEl.videoWidth || baseEl.naturalWidth || baseEl.clientWidth;
+        const srcH = (dims && dims.srcH) || baseEl.videoHeight || baseEl.naturalHeight || baseEl.clientHeight;
+        const dispW = baseEl.clientWidth || srcW;
+        const dispH = baseEl.clientHeight || srcH;
+        if (!srcW || !srcH || !dispW || !dispH) return;
+
+        canvas.width = dispW;
+        canvas.height = dispH;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         predictions.forEach(p => {
-            const scaleX = canvas.width / imageRef.current.naturalWidth;
-            const scaleY = canvas.height / imageRef.current.naturalHeight;
+            const scaleX = canvas.width / srcW;
+            const scaleY = canvas.height / srcH;
             const isPhone = p.class === 'cell phone';
 
             ctx.strokeStyle = isPhone ? '#ff0000' : '#00ff00';

@@ -12,6 +12,8 @@ const AdminMonitorGrid = () => {
     const [selectedClass, setSelectedClass] = useState(null);
     const [loading, setLoading] = useState(true);
     const [tokenReady, setTokenReady] = useState(false);
+    const [adminNotifications, setAdminNotifications] = useState([]);
+    const [adminLatestAlert, setAdminLatestAlert] = useState(null);
     
     // 🚨 TRACKING: References for hard cleanup
     const imageRef = useRef(null);
@@ -60,6 +62,18 @@ const AdminMonitorGrid = () => {
         const wsUrl = `ws://localhost:8000/api/websocket/ws/alerts/1?token=${token}`;
         const socket = new WebSocket(wsUrl);
         socketRef.current = socket;
+
+        socket.onopen = () => console.log("✅ Admin alert socket open");
+        socket.onmessage = (evt) => {
+            try {
+                const payload = JSON.parse(evt.data);
+                setAdminNotifications(prev => [payload, ...prev]);
+                setAdminLatestAlert(payload);
+                setTimeout(() => setAdminLatestAlert(null), 6000);
+            } catch (e) {
+                console.error('Admin socket parse error', e);
+            }
+        };
 
         return () => {
             if (socketRef.current) {

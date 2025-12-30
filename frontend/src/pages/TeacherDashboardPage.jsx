@@ -39,6 +39,26 @@ function TeacherDashboardPage() {
                     const data = JSON.parse(event.data);
                     setNotifications(prev => [data, ...prev]);
                     setLatestAlert(data);
+                    // Play alert sound
+                    try {
+                        const audio = new Audio('/alert.mp3');
+                        audio.volume = 0.6;
+                        audio.play().catch(() => {});
+                    } catch (e) {}
+
+                    // Browser notification (if permission granted)
+                    try {
+                        if (window.Notification && Notification.permission === 'granted') {
+                            const img = data.image_url || data.image_path || '';
+                            const notif = new Notification('Phone Violation Recorded', {
+                                body: data.message || data.detail || 'Detection alert',
+                                icon: img,
+                                image: img,
+                            });
+                            notif.onclick = () => window.focus();
+                        }
+                    } catch (e) {}
+
                     setTimeout(() => setLatestAlert(null), 5000); 
                 } catch (e) {
                     console.error("Socket Data Error:", e);
@@ -104,9 +124,9 @@ function TeacherDashboardPage() {
             {/* ALERT POP-UP */}
             {latestAlert && (
                 <div className="fixed top-5 right-5 z-50 animate-pulse bg-red-600 p-4 rounded-lg shadow-2xl border-2 border-white flex items-center gap-4 max-w-sm">
-                    {(latestAlert.image_url || latestAlert.image_path) && (
+                    {(latestAlert.image_url || latestAlert.image_path || latestAlert.crop_url) && (
                         <img 
-                            src={getImgUrl(latestAlert.image_url || latestAlert.image_path)} 
+                            src={getImgUrl(latestAlert.image_url || latestAlert.image_path || latestAlert.crop_url)} 
                             className="w-16 h-16 object-cover rounded border border-white/50"
                             alt="Evidence"
                         />

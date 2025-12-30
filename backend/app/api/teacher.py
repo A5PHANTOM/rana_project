@@ -103,6 +103,7 @@ async def teacher_qr_sign_in(
         "message": f"Monitoring session established for {target_class.name}.",
         "session_token": access_token,
         "token_type": "bearer",
+        "class_id": target_class.id,
         "class_name": target_class.name,
         "class_ip": target_class.esp32_ip,
     }

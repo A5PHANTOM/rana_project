@@ -1,7 +1,7 @@
 # monitor-server/database.py (Using a more robust try/except/finally structure)
 
 from typing import Optional
-from sqlmodel import Field, SQLModel, Session, create_engine
+from sqlmodel import Field, SQLModel, Session, create_engine, select
 # Import User model from the new location
 from app.db.models import User, pwd_context 
 
@@ -15,7 +15,8 @@ def create_db_and_tables():
 def create_initial_admin():
     # Helper function to create an initial Admin user if the DB is empty
     with Session(engine) as session:
-        admin_user = session.query(User).filter(User.username == "admin").first()
+        # 🚨 FIX: Use SQLModel's select() instead of deprecated query()
+        admin_user = session.exec(select(User).where(User.username == "admin")).first()
         if not admin_user:
             print("--- Creating initial Admin user ---")
             hashed_pwd = User.get_password_hash("adminpassword") # Use a secure password!
@@ -23,6 +24,8 @@ def create_initial_admin():
             session.add(admin)
             session.commit()
             print("--- Admin created (U: admin, P: adminpassword) ---")
+        else:
+            print(f"--- Admin user already exists: {admin_user.username} ---")
 
 # 🚨 FINAL ATTEMPT: Use an explicit try/except/finally block for maximum control
 def get_session():
