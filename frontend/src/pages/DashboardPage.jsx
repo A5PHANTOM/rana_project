@@ -138,7 +138,10 @@ const AdminMonitorGrid = () => {
                         <img 
                             ref={imageRef}
                             key={selectedClass.id} 
-                            src={`http://${selectedClass.esp32_ip}:81/stream`}
+                            // Stream frames will arrive via WebSocket/DetectionEngine;
+                            // keep src empty so we don't directly hit the camera from
+                            // the browser (important for phone IP cameras).
+                            src=""
                             crossOrigin="anonymous" 
                             className="w-full h-full object-contain z-10" 
                             alt="Live Camera Feed"

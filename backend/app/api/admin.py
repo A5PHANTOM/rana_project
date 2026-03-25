@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
-from app.db.models import User, Class, AuditLog
+from app.db.models import User, Class, AuditLog, UserClassLink
 from app.core.dependencies import get_current_admin_user
 from app.api.websocket import notifier 
 from database import get_session 
@@ -107,6 +107,35 @@ async def create_class(
 @router.get("/teachers")
 async def get_all_teachers(session: Annotated[Session, Depends(get_session)], admin_user: Annotated[User, Depends(get_current_admin_user)]):
     return session.exec(select(User).where(User.role == "Teacher")).all()
+
+
+@router.delete("/teachers/{teacher_id}")
+async def delete_teacher(
+    teacher_id: int,
+    session: Annotated[Session, Depends(get_session)],
+    admin_user: Annotated[User, Depends(get_current_admin_user)]
+):
+    """Delete a teacher account and its class links."""
+    teacher = session.get(User, teacher_id)
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    if teacher.role != "Teacher":
+        raise HTTPException(status_code=400, detail="Only teacher accounts can be deleted here")
+
+    try:
+        # Remove link rows first to satisfy FK constraints.
+        links = session.exec(select(UserClassLink).where(UserClassLink.user_id == teacher_id)).all()
+        for link in links:
+            session.delete(link)
+
+        session.delete(teacher)
+        session.commit()
+        return {"status": "success", "message": f"Teacher '{teacher.username}' deleted successfully."}
+    except Exception as e:
+        session.rollback()
+        print(f"Delete teacher error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete teacher account")
 
 @router.get("/classes/all")
 async def get_all_classes(session: Annotated[Session, Depends(get_session)], admin_user: Annotated[User, Depends(get_current_admin_user)]):

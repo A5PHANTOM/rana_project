@@ -80,6 +80,42 @@ async def _get_class_ip(class_id: str) -> Union[str, None]:
     except Exception:
         return None
 
+
+def _build_snapshot_url(ip: str) -> Union[str, None]:
+    """Build the correct snapshot URL for a given camera endpoint.
+
+    Supports both the legacy ESP32-CAM pattern and generic HTTP/IP Webcam
+    configurations so you can store flexible values in `Class.esp32_ip`:
+
+    - "192.168.4.1"                 -> http://192.168.4.1:81/capture (ESP32 default)
+    - "192.168.0.10:8080"           -> http://192.168.0.10:8080/shot.jpg (Android IP Webcam default)
+    - "192.168.0.10:8080/shot.jpg"  -> http://192.168.0.10:8080/shot.jpg
+    - "http://192.168.0.10:8080/shot.jpg" -> used as-is
+    """
+    if not ip:
+        return None
+
+    ip = ip.strip()
+    if not ip:
+        return None
+
+    # Full URL already provided
+    if ip.startswith("http://") or ip.startswith("https://"):
+        return ip
+
+    # If there's an explicit path, treat it as host[:port]/path
+    if "/" in ip:
+        return f"http://{ip}"
+
+    # If there's a port but no path, prefer IP Webcam-style snapshot endpoint
+    if ":" in ip:
+        # Example: "192.168.0.10:8080" -> "http://192.168.0.10:8080/shot.jpg"
+        return f"http://{ip}/shot.jpg"
+
+    # Bare host/IP -> keep legacy ESP32 behaviour
+    # Example: "192.168.4.1" -> "http://192.168.4.1:81/capture"
+    return f"http://{ip}:81/capture"
+
 async def _pull_snapshots_loop(class_id: str):
     relay = get_stream_relay(class_id)
     print(f"🧵 Snapshot puller started for class {class_id}")
@@ -96,8 +132,14 @@ async def _pull_snapshots_loop(class_id: str):
                     await asyncio.sleep(2.0)
                     continue
 
-                # Try /capture endpoint for single JPEG snapshot
-                url = f"http://{ip}:81/capture"
+                # Build a flexible snapshot URL that supports both ESP32 and
+                # Android IP Webcam (phone camera) setups.
+                url = _build_snapshot_url(ip)
+                if not url:
+                    await asyncio.sleep(2.0)
+                    continue
+
+                print(f"🎯 Pulling snapshot for class {class_id} from: {url}")
                 resp = await client.get(url)
                 if resp.status_code == 200 and resp.content:
                     b64 = base64.b64encode(resp.content).decode('ascii')

@@ -197,8 +197,11 @@ function TeacherDashboardPage() {
                         <div className="relative w-full h-full flex items-center justify-center bg-black rounded-lg">
                             <img 
                                 ref={imageRef}
-                                key={sessionInfo.class_ip}
-                                src={`http://${sessionInfo.class_ip}:81/stream`}
+                                key={sessionInfo.class_id}
+                                // The actual pixels will be provided via the WebSocket
+                                // stream handled by DetectionEngine. We keep src empty
+                                // so we don't hit cross-origin issues with phone IP cameras.
+                                src=""
                                 crossOrigin="anonymous" 
                                 className="max-w-full max-h-full block object-contain"
                                 alt="Live Feed"

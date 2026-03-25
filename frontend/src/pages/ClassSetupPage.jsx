@@ -144,12 +144,12 @@ function ClassSetupPage() {
 
 
     return (
-        <div className="flex-1 p-8 bg-gray-900 text-white">
+        <div className="flex flex-col h-screen p-8 bg-gray-900 text-white overflow-hidden">
             <h2 className="text-4xl font-extrabold text-indigo-400 mb-6">⚙️ Class & Camera Setup</h2>
             
             {/* --- Class Creation Form (Top Section) --- */}
-            <div className="bg-gray-800 p-6 rounded-lg shadow-xl mb-8 flex">
-                <div className="w-1/2 pr-8 border-r border-gray-700">
+            <div className="bg-gray-800 p-6 rounded-lg shadow-xl mb-8 flex flex-col xl:flex-row gap-6 shrink-0">
+                <div className="xl:w-1/2 xl:pr-8 xl:border-r border-gray-700">
                     <h3 className="text-2xl font-bold mb-4 border-b border-gray-700 pb-2">New Classroom Setup</h3>
                     
                     {message && <div className="bg-green-600 p-3 rounded-md text-white font-medium mb-4">{message}</div>}
@@ -172,7 +172,7 @@ function ClassSetupPage() {
                 </div>
                 
                 {/* --- QR Code Display (Top Section) --- */}
-                <div className="w-1/2 pl-8 flex flex-col items-center justify-center">
+                <div className="xl:w-1/2 xl:pl-8 flex flex-col items-center justify-center">
                     <h3 className="text-2xl font-bold mb-4 text-indigo-400">Generated QR Code</h3>
                     
                     {qrPayload ? (
@@ -195,7 +195,7 @@ function ClassSetupPage() {
             {/* ------------------------------------------------------------------- */}
             {/* --- Existing Classes Table (Bottom Section) --- */}
             {/* ------------------------------------------------------------------- */}
-            <div className="mt-10">
+            <div className="mt-2 flex flex-col flex-1 min-h-0">
                 <h3 className="text-3xl font-bold text-indigo-400 mb-4 border-b border-gray-700 pb-2">Existing Classes</h3>
 
                 {tableLoading && <p className="text-indigo-400">Loading classes...</p>}
@@ -205,9 +205,9 @@ function ClassSetupPage() {
                 )}
 
                 {classes.length > 0 && (
-                    <div className="overflow-x-auto bg-gray-800 rounded-lg shadow-xl">
+                    <div className="flex-1 min-h-0 overflow-auto bg-gray-800 rounded-lg shadow-xl border border-gray-700">
                         <table className="min-w-full text-left text-gray-300">
-                            <thead>
+                            <thead className="sticky top-0 z-10">
                                 <tr className="uppercase text-sm bg-gray-700 text-gray-200">
                                     <th className="py-3 px-4">ID</th>
                                     <th className="py-3 px-4">Name</th>
