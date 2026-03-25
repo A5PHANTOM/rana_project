@@ -6,6 +6,7 @@ import ClassSetupPage from './ClassSetupPage';
 import AuditLogsPage from './AuditLogsPage';
 import DetectionEngine from '../components/DetectionEngine'; // 🚨 Ensure this is imported
 import { getAllClassesData } from '../api/admin'; 
+import { WS_ROOT } from '../config/network';
 
 const AdminMonitorGrid = () => {
     const [classes, setClasses] = useState([]);
@@ -59,7 +60,7 @@ const AdminMonitorGrid = () => {
         fetchClasses();
 
         // 🚨 FIX: Establish Admin Alert Socket here to track it for cleanup
-        const wsUrl = `ws://localhost:8000/api/websocket/ws/alerts/1?token=${token}`;
+        const wsUrl = `${WS_ROOT}/api/websocket/ws/alerts/1?token=${token}`;
         const socket = new WebSocket(wsUrl);
         socketRef.current = socket;
 

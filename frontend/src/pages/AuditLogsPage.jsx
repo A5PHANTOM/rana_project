@@ -1,10 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { getAuditLogs } from '../api/admin';
+import { UPLOADS_ROOT } from '../config/network';
 
 const AuditLogsPage = () => {
     const [logs, setLogs] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+
+    const normalizeImageUrl = (path) => {
+        if (!path) return '';
+        if (path.startsWith('http://localhost:8000') || path.startsWith('http://127.0.0.1:8000')) {
+            return path.replace(/^https?:\/\/(localhost|127\.0\.0\.1):8000/i, UPLOADS_ROOT.replace('/uploads', ''));
+        }
+        return path.startsWith('http')
+            ? path
+            : `${UPLOADS_ROOT}/${String(path).replace(/^\/+/, '').replace(/^uploads\//, '')}`;
+    };
 
     useEffect(() => {
         const fetchLogs = async () => {
@@ -52,7 +63,7 @@ const AuditLogsPage = () => {
                             <div className="relative h-56 bg-black overflow-hidden flex items-center justify-center">
                                 {/* 🚨 FIX: Removed double http://localhost:8000/ prefix */}
                                 <img 
-                                    src={log.image_path} 
+                                    src={normalizeImageUrl(log.image_path)} 
                                     alt="Violation Evidence"
                                     className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-500"
                                     onError={(e) => {
@@ -62,7 +73,7 @@ const AuditLogsPage = () => {
                                         e.target.parentNode.innerHTML = `
                                             <div class="text-center p-4">
                                                 <p class="text-red-500 font-black text-xs">IMAGE LOAD ERROR</p>
-                                                <p class="text-gray-600 text-[10px] mt-2 font-mono break-all">${log.image_path}</p>
+                                                <p class="text-gray-600 text-[10px] mt-2 font-mono break-all">${normalizeImageUrl(log.image_path)}</p>
                                             </div>
                                         `;
                                     }}
@@ -94,7 +105,7 @@ const AuditLogsPage = () => {
                                         </span>
                                     </div>
                                     <a 
-                                        href={log.image_path} 
+                                        href={normalizeImageUrl(log.image_path)} 
                                         target="_blank" 
                                         rel="noopener noreferrer"
                                         className="text-[10px] bg-gray-700 hover:bg-indigo-600 text-white px-4 py-2 rounded-lg transition-colors font-bold uppercase tracking-widest shadow-md"

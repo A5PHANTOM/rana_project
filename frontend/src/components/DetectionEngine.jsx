@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from 'react';
+import { API_ROOT, WS_ROOT } from '../config/network';
+import { playAlarmSound } from '../utils/alarmSound';
 
 const DetectionEngine = ({ imageRef, classId, teacherId }) => {
     const canvasRef = useRef(null); 
@@ -11,8 +13,7 @@ const DetectionEngine = ({ imageRef, classId, teacherId }) => {
         if (!classId) return;
         
         const token = localStorage.getItem('token') || localStorage.getItem('access_token');
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const streamUrl = `${protocol}//localhost:8000/api/websocket/ws/stream/${classId}?token=${token}`;
+        const streamUrl = `${WS_ROOT}/api/websocket/ws/stream/${classId}?token=${token}`;
         
         console.log(`📺 Connecting to stream: ${streamUrl}`);
         streamWsRef.current = new WebSocket(streamUrl);
@@ -83,7 +84,7 @@ const DetectionEngine = ({ imageRef, classId, teacherId }) => {
                 tempCanvas.getContext('2d').drawImage(baseEl, 0, 0, srcW, srcH);
                 const base64Image = tempCanvas.toDataURL('image/jpeg', 0.9);
 
-                const response = await fetch('http://localhost:8000/api/admin/detect', {
+                const response = await fetch(`${API_ROOT}/admin/detect`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ image: base64Image, class_id: classId, teacher_id: teacherId })
@@ -107,10 +108,14 @@ const DetectionEngine = ({ imageRef, classId, teacherId }) => {
                 // If backend already saved evidence (evidence_url present), still give UI feedback
                 if (data.evidence_url && shouldThrottle) {
                     lastReportTime.current = now;
+                    // 🚨 Play alarm for phone detection
+                    playAlarmSound();
                     try { alert("🚨 Phone Violation Recorded!"); } catch (e) {}
                 } else if (phone && shouldThrottle) {
                     lastReportTime.current = now;
                     console.log("🚩 PHONE DETECTED - ATTEMPTING TO LOG...");
+                    // 🚨 Play alarm when sending violation report
+                    playAlarmSound();
                     await reportViolation(phone, base64Image);
                 }
             } catch (err) {
@@ -136,7 +141,7 @@ const DetectionEngine = ({ imageRef, classId, teacherId }) => {
                 evidence: imagePayload 
             };
 
-            const response = await fetch('http://localhost:8000/api/admin/report-violation', {
+            const response = await fetch(`${API_ROOT}/admin/report-violation`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',

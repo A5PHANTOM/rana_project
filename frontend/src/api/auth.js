@@ -1,7 +1,9 @@
 // monitor-web/src/api/auth.js
 
-// 🚨 FIX: Base URL now points to the API root. The full endpoint path is passed by the caller.
-const API_ROOT_URL = "http://127.0.0.1:8000/api"; 
+import { API_ROOT } from '../config/network';
+
+// API base is dynamic so the frontend works from other devices on the same LAN.
+const API_ROOT_URL = API_ROOT;
 
 /**
  * Handles login for both Admin and Teacher roles.

@@ -23,6 +23,50 @@ app = FastAPI(title="Discipline Monitor API")
 # Using the Nano model for maximum FPS on Apple Silicon
 model = YOLO('yolov8n.pt') 
 
+PHONE_CLASS_ID = 67
+PERSON_CLASS_ID = 0
+
+
+def _box_iou(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter = inter_w * inter_h
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _dedupe_phone_boxes(candidates, iou_threshold=0.45):
+    """Simple NMS-style dedupe to keep the strongest overlapping phone boxes."""
+    if not candidates:
+        return []
+
+    kept = []
+    for cand in sorted(candidates, key=lambda p: p["conf"], reverse=True):
+        cand_box = (cand["x"], cand["y"], cand["x"] + cand["w"], cand["y"] + cand["h"])
+        overlaps = False
+        for existing in kept:
+            existing_box = (
+                existing["x"], existing["y"],
+                existing["x"] + existing["w"],
+                existing["y"] + existing["h"]
+            )
+            if _box_iou(cand_box, existing_box) >= iou_threshold:
+                overlaps = True
+                break
+        if not overlaps:
+            kept.append(cand)
+    return kept
+
 # --- 📁 Static Files (Evidence Storage) ---
 # Ensure the folder exists and is mounted so Flutter can load images
 os.makedirs("uploads/evidence", exist_ok=True)
@@ -40,6 +84,9 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    # Allow private-network/dev origins so frontend opened from another
+    # device (e.g., http://192.168.x.x:5173) can call this API.
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True, 
     allow_methods=["*"], 
     allow_headers=["*"], 
@@ -74,112 +121,112 @@ async def detect_objects(data: dict):
         except Exception:
             pass
 
-        # Performance: tuned for better recall on phone backs/sides
-        # - imgsz 960 for higher resolution crops
-        # - conf 0.15 to keep more candidates
-        # - classes=None (let model output everything; we filter manually)
-        # Revert to stable baseline that worked previously: nano model, reasonable conf
-        # Improve phone detection accuracy:
-        # - focus on COCO class 67 (cell phone) to avoid spurious labels
-        # - use larger input size (960) for better small-object detection
-        # - lower confidence to catch partially visible phones
-        # - enable augmentation (TTA) for better recall
-        # First pass: higher resolution + mild TTA to improve small-object recall
+        # Pass 1: detect only people and phones on full frame.
         results = model.predict(
             frame,
-            conf=0.12,
+            conf=0.14,
             iou=0.45,
             imgsz=1280,
+            classes=[PERSON_CLASS_ID, PHONE_CLASS_ID],
             agnostic_nms=True,
-            max_det=100,
-            augment=True,
+            max_det=120,
             device='mps',
             verbose=False
         )
 
-        predictions = []
-        person_count = 0
+        person_boxes = []
+        phone_candidates = []
         total_boxes = 0
+        h_img, w_img = frame.shape[:2]
 
-        def collect_predictions(results_obj):
-            nonlocal person_count, total_boxes
-            local_preds = []
-            for r_idx, r in enumerate(results_obj):
-                for bidx, box in enumerate(r.boxes):
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    label = model.names[int(box.cls[0])]
-                    conf = float(box.conf[0])
-                    print(f"  [box] result:{r_idx} box:{bidx} label:{label} conf:{conf:.3f} coords:{x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}")
-                    total_boxes += 1
+        for r_idx, r in enumerate(results):
+            for bidx, box in enumerate(r.boxes):
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                total_boxes += 1
+                print(
+                    f"  [box] result:{r_idx} box:{bidx} cls:{cls_id} "
+                    f"conf:{conf:.3f} coords:{x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}"
+                )
 
-                    if label == 'person':
-                        person_count += 1
-
-                    # Keep cell phone and close proxies
-                    target_classes = ['cell phone', 'remote', 'book']
-                    if label in target_classes:
-                        local_preds.append({
-                            "x": x1, "y": y1, "w": x2-x1, "h": y2-y1,
-                            "class": 'cell phone' if label == 'remote' else label,
-                            "conf": conf
-                        })
-            return local_preds
-
-        predictions = collect_predictions(results)
-
-        # Fallback pass: target cell phone class with tuned thresholds
-        if len(predictions) == 0:
-            print("  ℹ️ No phone detected in first pass; running focused fallback...")
-            results_fb = model.predict(
-                frame,
-                conf=0.10,
-                iou=0.55,
-                imgsz=1280,
-                classes=[67],
-                agnostic_nms=True,
-                max_det=100,
-                augment=True,
-                device='mps',
-                verbose=False
-            )
-            predictions = collect_predictions(results_fb)
-
-        # Heuristic fallback: detect bright rectangular phone screens if YOLO missed
-        if len(predictions) == 0:
-            try:
-                print("  🔎 Running screen heuristic fallback...")
-                h_img, w_img = frame.shape[:2]
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                # Emphasize bright areas (phone screens)
-                _, thr = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-                thr = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
-                contours, _ = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                best = None
-                for cnt in contours:
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    area = w * h
-                    if area < 0.004 * w_img * h_img:  # skip tiny blobs
-                        continue
-                    ar = w / float(h)
-                    if 0.35 <= ar <= 0.75 or 1.3 <= ar <= 2.2:  # portrait or landscape phone-ish
-                        # check fill ratio
-                        roi = thr[max(0,y):min(h_img,y+h), max(0,x):min(w_img,x+w)]
-                        fill = float(cv2.countNonZero(roi)) / max(1, roi.size)
-                        if fill > 0.55:  # mostly bright
-                            score = fill * (area / (w_img*h_img))
-                            if best is None or score > best[0]:
-                                best = (score, x, y, w, h)
-                if best is not None:
-                    _, x, y, w, h = best
-                    predictions.append({
-                        "x": float(x), "y": float(y), "w": float(w), "h": float(h),
-                        "class": 'cell phone', "conf": 0.35
+                if cls_id == PERSON_CLASS_ID:
+                    person_boxes.append((x1, y1, x2, y2, conf))
+                elif cls_id == PHONE_CLASS_ID:
+                    phone_candidates.append({
+                        "x": x1,
+                        "y": y1,
+                        "w": x2 - x1,
+                        "h": y2 - y1,
+                        "class": "cell phone",
+                        "conf": conf,
                     })
-                    print("  ✅ Screen heuristic produced a phone candidate")
-            except Exception as hf_err:
-                print(f"  ⚠️ Heuristic fallback error: {hf_err}")
 
-        print(f"  Detection produced {total_boxes} raw boxes; filtered to {len(predictions)} predictions")
+        person_count = len(person_boxes)
+
+        # Pass 2: zoom into person regions to recover small/partial phones.
+        # This improves recall when phone size is too small in the full frame.
+        if person_boxes:
+            persons_for_roi = sorted(
+                person_boxes,
+                key=lambda p: (p[2] - p[0]) * (p[3] - p[1]),
+                reverse=True
+            )[:6]
+
+            for px1, py1, px2, py2, _ in persons_for_roi:
+                pw = px2 - px1
+                ph = py2 - py1
+                ex = 0.28
+                ey = 0.28
+                rx1 = int(max(0, px1 - pw * ex))
+                ry1 = int(max(0, py1 - ph * ey))
+                rx2 = int(min(w_img, px2 + pw * ex))
+                ry2 = int(min(h_img, py2 + ph * ey))
+
+                if rx2 - rx1 < 40 or ry2 - ry1 < 40:
+                    continue
+
+                roi = frame[ry1:ry2, rx1:rx2]
+                try:
+                    roi_results = model.predict(
+                        roi,
+                        conf=0.08,
+                        iou=0.50,
+                        imgsz=960,
+                        classes=[PHONE_CLASS_ID],
+                        agnostic_nms=True,
+                        max_det=15,
+                        device='mps',
+                        verbose=False
+                    )
+                    for rr in roi_results:
+                        for box in rr.boxes:
+                            bx1, by1, bx2, by2 = box.xyxy[0].tolist()
+                            conf = float(box.conf[0])
+                            gx1 = float(rx1 + bx1)
+                            gy1 = float(ry1 + by1)
+                            gx2 = float(rx1 + bx2)
+                            gy2 = float(ry1 + by2)
+                            phone_candidates.append({
+                                "x": gx1,
+                                "y": gy1,
+                                "w": gx2 - gx1,
+                                "h": gy2 - gy1,
+                                "class": "cell phone",
+                                "conf": min(0.99, conf * 0.96),
+                            })
+                except Exception as roi_err:
+                    print(f"  ⚠️ ROI phone pass error: {roi_err}")
+
+        # Filter tiny boxes and dedupe overlapping detections.
+        min_area = 0.00012 * w_img * h_img
+        phone_candidates = [
+            p for p in phone_candidates
+            if (p["w"] * p["h"]) >= min_area and p["conf"] >= 0.10
+        ]
+        predictions = _dedupe_phone_boxes(phone_candidates, iou_threshold=0.45)
+
+        print(f"  Detection produced {total_boxes} raw boxes; filtered to {len(predictions)} phone predictions")
 
         # 🚀 BROADCAST to all connected WebSocket clients watching this class
         frame_data = {

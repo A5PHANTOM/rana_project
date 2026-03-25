@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
+import jsQR from 'jsqr';
 import { useAuth } from '../hooks/useAuth';
 import DetectionEngine from '../components/DetectionEngine';
+import { API_ROOT, WS_ROOT, UPLOADS_ROOT } from '../config/network';
+import { playAlarmSound } from '../utils/alarmSound';
 
 function TeacherDashboardPage() {
     const { token, logout, user } = useAuth();
@@ -9,17 +12,160 @@ function TeacherDashboardPage() {
     const [sessionInfo, setSessionInfo] = useState(null);
     const [qrInput, setQrInput] = useState('');
     const [error, setError] = useState('');
+    const [scannerOpen, setScannerOpen] = useState(false);
+    const [scannerError, setScannerError] = useState('');
     const imageRef = useRef(null);
+    const scanVideoRef = useRef(null);
+    const scanCanvasRef = useRef(null);
+    const scanUploadRef = useRef(null);
+    const scannerStreamRef = useRef(null);
+    const scannerTimerRef = useRef(null);
     
     // Persist the socket across re-renders
     const socketRef = useRef(null);
+
+    const stopScanner = () => {
+        if (scannerTimerRef.current) {
+            clearInterval(scannerTimerRef.current);
+            scannerTimerRef.current = null;
+        }
+
+        if (scannerStreamRef.current) {
+            scannerStreamRef.current.getTracks().forEach(track => track.stop());
+            scannerStreamRef.current = null;
+        }
+
+        if (scanVideoRef.current) {
+            scanVideoRef.current.srcObject = null;
+        }
+
+        setScannerOpen(false);
+    };
+
+    const startScanner = async () => {
+        setError('');
+        setScannerError('');
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+            setScannerError('Live camera scan is not supported in this browser. Use Scan QR from Photo.');
+            return;
+        }
+
+        // On many mobile browsers, getUserMedia requires HTTPS for non-localhost origins.
+        if (!window.isSecureContext) {
+            setScannerError('Live camera scan needs HTTPS on mobile. Use Scan QR from Photo or open the app over HTTPS.');
+            if (scanUploadRef.current) {
+                scanUploadRef.current.click();
+            }
+            return;
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: 'environment' } },
+                audio: false,
+            });
+
+            scannerStreamRef.current = stream;
+            setScannerOpen(true);
+
+            // Wait for modal/video to render before attaching stream.
+            setTimeout(async () => {
+                if (!scanVideoRef.current) return;
+
+                scanVideoRef.current.srcObject = stream;
+                await scanVideoRef.current.play();
+
+                scannerTimerRef.current = setInterval(async () => {
+                    try {
+                        if (!scanVideoRef.current || scanVideoRef.current.readyState < 2) return;
+                        const video = scanVideoRef.current;
+                        const canvas = scanCanvasRef.current;
+                        if (!canvas) return;
+
+                        const width = video.videoWidth || 0;
+                        const height = video.videoHeight || 0;
+                        if (!width || !height) return;
+
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                        ctx.drawImage(video, 0, 0, width, height);
+                        const imageData = ctx.getImageData(0, 0, width, height);
+                        const decoded = jsQR(imageData.data, width, height, { inversionAttempts: 'attemptBoth' });
+                        if (decoded?.data) {
+                            setQrInput(decoded.data.trim());
+                            stopScanner();
+                        }
+                    } catch (scanErr) {
+                        // Ignore transient frame errors and keep scanning.
+                    }
+                }, 220);
+            }, 0);
+        } catch (camErr) {
+            setScannerError('Unable to open live camera. Use Scan QR from Photo or allow camera permission.');
+            stopScanner();
+        }
+    };
+
+    const handleUploadScan = async (event) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        setScannerError('');
+        try {
+            const objectUrl = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => {
+                try {
+                    const canvas = scanCanvasRef.current;
+                    if (!canvas) {
+                        setScannerError('Scanner canvas unavailable. Please retry.');
+                        URL.revokeObjectURL(objectUrl);
+                        return;
+                    }
+
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                    ctx.drawImage(img, 0, 0, img.width, img.height);
+                    const imageData = ctx.getImageData(0, 0, img.width, img.height);
+                    const decoded = jsQR(imageData.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+
+                    if (decoded?.data) {
+                        setQrInput(decoded.data.trim());
+                        stopScanner();
+                    } else {
+                        setScannerError('QR not detected in photo. Try a clearer/closer image.');
+                    }
+                } finally {
+                    URL.revokeObjectURL(objectUrl);
+                }
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
+                setScannerError('Could not read image. Please try another photo.');
+            };
+            img.src = objectUrl;
+        } catch (e) {
+            setScannerError('Photo scan failed. Please try again.');
+        } finally {
+            event.target.value = '';
+        }
+    };
+
+    useEffect(() => {
+        return () => {
+            stopScanner();
+        };
+    }, []);
 
     useEffect(() => {
         if (!token || socketRef.current) return;
 
         // 🚨 Match the ID to your logged-in session
         const targetId = user?.id || localStorage.getItem('user_id') || "1";
-        const wsUrl = `ws://localhost:8000/api/websocket/ws/alerts/${targetId}?token=${token}`;
+        const wsUrl = `${WS_ROOT}/api/websocket/ws/alerts/${targetId}?token=${token}`;
 
         // Add a tiny delay to prevent React StrictMode race conditions
         const connectTimer = setTimeout(() => {
@@ -38,6 +184,12 @@ function TeacherDashboardPage() {
                 try {
                     const data = JSON.parse(event.data);
                     setNotifications(prev => [data, ...prev]);
+
+                    // 🚨 Play alarm sound for phone violations
+                    if (data.message?.includes('Phone') || data.detail?.includes('Phone')) {
+                        playAlarmSound();
+                    }
+
                     setLatestAlert(data);
                     // Play alert sound
                     try {
@@ -92,14 +244,17 @@ function TeacherDashboardPage() {
 
     const getImgUrl = (path) => {
         if (!path) return '';
-        return path.startsWith('http') ? path : `http://localhost:8000/${path}`;
+        if (path.startsWith('http://localhost:8000') || path.startsWith('http://127.0.0.1:8000')) {
+            return path.replace(/^https?:\/\/(localhost|127\.0\.0\.1):8000/i, UPLOADS_ROOT.replace('/uploads', ''));
+        }
+        return path.startsWith('http') ? path : `${UPLOADS_ROOT}/${String(path).replace(/^\/+/, '').replace(/^uploads\//, '')}`;
     };
 
     const handleSignIn = async (e) => {
         e.preventDefault();
         setError('');
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/teacher/sign-in', {
+            const res = await fetch(`${API_ROOT}/teacher/sign-in`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json', 
@@ -157,11 +312,34 @@ function TeacherDashboardPage() {
                                 placeholder="QR Payload UUID" 
                                 className="w-full bg-gray-700 p-3 rounded text-sm border border-transparent focus:border-indigo-500 outline-none" 
                             />
+                            <button
+                                type="button"
+                                onClick={startScanner}
+                                className="w-full bg-emerald-600 hover:bg-emerald-700 py-3 rounded font-bold transition"
+                            >
+                                Scan QR with Camera
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => scanUploadRef.current?.click()}
+                                className="w-full bg-cyan-600 hover:bg-cyan-700 py-3 rounded font-bold transition"
+                            >
+                                Scan QR from Photo
+                            </button>
                             <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 py-3 rounded font-bold transition">
                                 Connect to Camera
                             </button>
                         </form>
+                        <input
+                            ref={scanUploadRef}
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            className="hidden"
+                            onChange={handleUploadScan}
+                        />
                         {error && <p className="text-red-500 text-xs mt-3 font-semibold">{error}</p>}
+                        {scannerError && <p className="text-amber-400 text-xs mt-2 font-semibold">{scannerError}</p>}
                     </div>
 
                     <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 h-[550px] flex flex-col shadow-inner">
@@ -222,6 +400,45 @@ function TeacherDashboardPage() {
                     )}
                 </div>
             </div>
+
+            {scannerOpen && (
+                <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+                    <div className="w-full max-w-md bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-2xl">
+                        <h4 className="font-bold text-indigo-300 mb-3">Scan Room QR</h4>
+                        <p className="text-xs text-gray-400 mb-3">Point your camera at the room QR code. It will auto-fill when detected.</p>
+                        <video
+                            ref={scanVideoRef}
+                            className="w-full rounded-lg bg-black border border-gray-600"
+                            muted
+                            playsInline
+                        />
+                        <div className="grid grid-cols-2 gap-3 mt-4">
+                            <button
+                                type="button"
+                                onClick={stopScanner}
+                                className="bg-gray-600 hover:bg-gray-500 py-2 rounded font-semibold"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={startScanner}
+                                className="bg-indigo-600 hover:bg-indigo-700 py-2 rounded font-semibold"
+                            >
+                                Restart Scan
+                            </button>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => scanUploadRef.current?.click()}
+                            className="w-full mt-3 bg-cyan-700 hover:bg-cyan-600 py-2 rounded font-semibold"
+                        >
+                            Use Photo Instead
+                        </button>
+                    </div>
+                </div>
+            )}
+            <canvas ref={scanCanvasRef} className="hidden" />
         </div>
     );
 }
