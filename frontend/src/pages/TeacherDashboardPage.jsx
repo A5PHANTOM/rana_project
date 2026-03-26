@@ -46,35 +46,58 @@ function TeacherDashboardPage() {
         setError('');
         setScannerError('');
 
+        console.log('🎥 Camera detection:', {
+            hasMediaDevices: !!navigator.mediaDevices,
+            hasGetUserMedia: !!navigator.mediaDevices?.getUserMedia,
+            isSecureContext: window.isSecureContext,
+            protocol: window.location.protocol,
+        });
+
         if (!navigator.mediaDevices?.getUserMedia) {
-            setScannerError('Live camera scan is not supported in this browser. Use Scan QR from Photo.');
+            console.warn('❌ getUserMedia not available');
+            setScannerError('📸 Camera not available in this browser/context. Switching to photo scan...');
+            // Auto-fallback to photo upload
+            setTimeout(() => {
+                if (scanUploadRef.current) {
+                    scanUploadRef.current.click();
+                }
+            }, 500);
             return;
         }
 
         // On many mobile browsers, getUserMedia requires HTTPS for non-localhost origins.
-        if (!window.isSecureContext) {
-            setScannerError('Live camera scan needs HTTPS on mobile. Use Scan QR from Photo or open the app over HTTPS.');
-            if (scanUploadRef.current) {
-                scanUploadRef.current.click();
-            }
+        if (!window.isSecureContext && !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127')) {
+            console.warn('❌ Insecure context detected');
+            setScannerError('🔒 HTTPS required for camera on mobile. Using photo scan instead...');
+            setTimeout(() => {
+                if (scanUploadRef.current) {
+                    scanUploadRef.current.click();
+                }
+            }, 500);
             return;
         }
 
         try {
+            console.log('🎬 Requesting camera access...');
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: { ideal: 'environment' } },
                 audio: false,
             });
 
+            console.log('✅ Camera stream obtained');
             scannerStreamRef.current = stream;
             setScannerOpen(true);
 
             // Wait for modal/video to render before attaching stream.
             setTimeout(async () => {
-                if (!scanVideoRef.current) return;
+                if (!scanVideoRef.current) {
+                    console.warn('⚠️ Video ref not available');
+                    return;
+                }
 
                 scanVideoRef.current.srcObject = stream;
                 await scanVideoRef.current.play();
+                console.log('▶️ Video playback started');
 
                 scannerTimerRef.current = setInterval(async () => {
                     try {
@@ -90,12 +113,21 @@ function TeacherDashboardPage() {
                         canvas.width = width;
                         canvas.height = height;
                         const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                        if (!ctx) return;
+                        
                         ctx.drawImage(video, 0, 0, width, height);
                         const imageData = ctx.getImageData(0, 0, width, height);
                         const decoded = jsQR(imageData.data, width, height, { inversionAttempts: 'attemptBoth' });
                         if (decoded?.data) {
-                            setQrInput(decoded.data.trim());
+                            console.log('✅ QR Detected from camera:', decoded.data);
+                            const qrValue = decoded.data.trim();
+                            setQrInput(qrValue);
                             stopScanner();
+                            
+                            // Auto-submit after stopping scanner
+                            setTimeout(() => {
+                                handleSignIn({ preventDefault: () => {} });
+                            }, 200);
                         }
                     } catch (scanErr) {
                         // Ignore transient frame errors and keep scanning.
@@ -103,8 +135,15 @@ function TeacherDashboardPage() {
                 }, 220);
             }, 0);
         } catch (camErr) {
-            setScannerError('Unable to open live camera. Use Scan QR from Photo or allow camera permission.');
+            console.error('❌ Camera access error:', camErr);
+            setScannerError(`Camera error: ${camErr.name}. Using photo scan instead...`);
             stopScanner();
+            // Auto-fallback to photo upload on error
+            setTimeout(() => {
+                if (scanUploadRef.current) {
+                    scanUploadRef.current.click();
+                }
+            }, 500);
         }
     };
 
@@ -118,7 +157,7 @@ function TeacherDashboardPage() {
             const img = new Image();
             img.onload = () => {
                 try {
-                    const canvas = scanCanvasRef.current;
+                    const canvas = document.createElement('canvas');
                     if (!canvas) {
                         setScannerError('Scanner canvas unavailable. Please retry.');
                         URL.revokeObjectURL(objectUrl);
@@ -128,13 +167,28 @@ function TeacherDashboardPage() {
                     canvas.width = img.width;
                     canvas.height = img.height;
                     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                    if (!ctx) {
+                        setScannerError('Could not initialize canvas context.');
+                        URL.revokeObjectURL(objectUrl);
+                        return;
+                    }
+
                     ctx.drawImage(img, 0, 0, img.width, img.height);
                     const imageData = ctx.getImageData(0, 0, img.width, img.height);
+                    console.log(`📸 Scanning photo: ${img.width}x${img.height}`);
+                    
                     const decoded = jsQR(imageData.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
 
                     if (decoded?.data) {
-                        setQrInput(decoded.data.trim());
+                        console.log('✅ QR Decoded:', decoded.data);
+                        const qrValue = decoded.data.trim();
+                        setQrInput(qrValue);
                         stopScanner();
+                        
+                        // Auto-submit after a short delay to ensure state is updated
+                        setTimeout(() => {
+                            handleSignIn({ preventDefault: () => {} });
+                        }, 200);
                     } else {
                         setScannerError('QR not detected in photo. Try a clearer/closer image.');
                     }
@@ -148,6 +202,7 @@ function TeacherDashboardPage() {
             };
             img.src = objectUrl;
         } catch (e) {
+            console.error('Photo scan error:', e);
             setScannerError('Photo scan failed. Please try again.');
         } finally {
             event.target.value = '';
